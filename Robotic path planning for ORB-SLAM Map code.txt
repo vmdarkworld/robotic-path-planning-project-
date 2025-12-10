@@ -1,0 +1,172 @@
+import cv2
+import numpy as np
+import matplotlib.pyplot as plt
+from scipy.spatial import distance
+import heapq
+
+# Initialize the ORB detector
+orb = cv2.ORB_create(nfeatures=1000)
+
+def create_occupancy_grid(keypoints, frame_shape, grid_size=10):
+    """Create an occupancy grid from keypoints."""
+    height, width = frame_shape[:2]
+    grid_height = height // grid_size
+    grid_width = width // grid_size
+    
+    # Initialize an empty grid
+    occupancy_grid = np.zeros((grid_height, grid_width), dtype=int)
+
+    # Mark grid cells based on keypoint positions
+    for kp in keypoints:
+        x, y = kp.pt
+        grid_x = int(x // grid_size)
+        grid_y = int(y // grid_size)
+        
+        if 0 <= grid_x < grid_width and 0 <= grid_y < grid_height:
+            occupancy_grid[grid_y, grid_x] = 1  # Mark cell as occupied
+    
+    return occupancy_grid
+
+def plot_occupancy_grid(grid, start=None, goal=None, path=None):
+    """Plot the occupancy grid, with optional start, goal, and path."""
+    plt.imshow(grid, cmap='gray_r', origin='lower')
+    plt.title("Occupancy Grid with Path")
+    plt.xlabel("Grid X")
+    plt.ylabel("Grid Y")
+    
+    if start:
+        plt.plot(start[0], start[1], 'go', label='Start')  # Green circle for start point
+    if goal:
+        plt.plot(goal[0], goal[1], 'ro', label='Goal')  # Red circle for goal point
+    if path:
+        path_x, path_y = zip(*path)
+        plt.plot(path_x, path_y, 'b-', label='Shortest Path')  # Blue line for the path
+
+    plt.legend()
+
+def compute_distance(start, goal):
+    """Compute Euclidean distance between start and goal."""
+    return distance.euclidean(start, goal)
+
+def dijkstra(occupancy_grid, start, goal):
+    """Dijkstra's algorithm to find the shortest path from start to goal."""
+    height, width = occupancy_grid.shape
+
+    # Define possible movements (up, down, left, right)
+    directions = [(-1, 0), (1, 0), (0, -1), (0, 1)]
+
+    # Priority queue to store (distance, x, y)
+    pq = [(0, start)]
+    
+    # Distance map (initialized to infinity)
+    dist_map = np.full((height, width), np.inf)
+    dist_map[start[1], start[0]] = 0
+
+    # Map to track the path
+    prev = {}
+
+    while pq:
+        dist, current = heapq.heappop(pq)
+        x, y = current
+
+        if (x, y) == goal:
+            break  # Goal reached
+        
+        # Explore neighbors
+        for dx, dy in directions:
+            nx, ny = x + dx, y + dy
+            
+            if 0 <= nx < width and 0 <= ny < height and occupancy_grid[ny, nx] == 0:  # Passable cell
+                new_dist = dist + 1  # All edges have equal weight (1)
+
+                if new_dist < dist_map[ny, nx]:
+                    dist_map[ny, nx] = new_dist
+                    heapq.heappush(pq, (new_dist, (nx, ny)))
+                    prev[(nx, ny)] = (x, y)  # Track the previous cell
+
+    # Reconstruct the path
+    path = []
+    current = goal
+    while current in prev:
+        path.append(current)
+        current = prev[current]
+    path.append(start)
+    path.reverse()
+
+    return path
+
+def main():
+    # Open the camera (change 0 to your camera index if needed)
+    cap = cv2.VideoCapture(0)
+
+    if not cap.isOpened():
+        print("Error: Could not open video capture.")
+        return
+
+    print("Camera opened. Stop the kernel (Interrupt) to exit the loop.")
+
+    try:
+        # Main loop to capture frames and extract ORB keypoints and descriptors
+        frame_count = 0
+        while True:
+            # Capture a frame from the camera
+            ret, frame = cap.read()
+
+            if not ret:
+                print("Error: Could not read frame.")
+                break
+
+            # Convert the frame to grayscale for keypoint detection
+            gray_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+
+            # Detect ORB keypoints and compute descriptors
+            keypoints, descriptors = orb.detectAndCompute(gray_frame, None)
+
+            # Create occupancy grid every 10 frames to reduce overload
+            if frame_count % 10 == 0:
+                occupancy_grid = create_occupancy_grid(keypoints, gray_frame.shape, grid_size=10)
+
+                # Define start and goal points in image coordinates (pixels)
+                start_point_pixel = (595, 400)  # Example start point in pixels
+                goal_point_pixel = (200, 200)  # Example goal point in pixels
+                
+                # Convert start and goal to grid coordinates
+                grid_size = 10
+                start_grid = (start_point_pixel[0] // grid_size, start_point_pixel[1] // grid_size)
+                goal_grid = (goal_point_pixel[0] // grid_size, goal_point_pixel[1] // grid_size)
+
+                # Run Dijkstra to find the shortest path
+                path = dijkstra(occupancy_grid, start=start_grid, goal=goal_grid)
+
+                # Set up the matplotlib figure with two subplots
+                plt.figure(figsize=(10, 5))
+
+                # Plot the real-time ORB keypoints on the left subplot
+                plt.subplot(1, 2, 1)
+                img_with_keypoints = cv2.drawKeypoints(frame, keypoints, None, color=(0, 255, 0), flags=0)
+                plt.imshow(cv2.cvtColor(img_with_keypoints, cv2.COLOR_BGR2RGB))
+                plt.title("Real-Time ORB Keypoints")
+                plt.axis('off')
+
+                # Plot the occupancy grid with the path on the right subplot
+                plt.subplot(1, 2, 2)
+                plot_occupancy_grid(occupancy_grid, start=start_grid, goal=goal_grid, path=path)
+
+                # Show the plots
+                plt.tight_layout()
+                plt.pause(0.01)  # Slight pause to update the display
+
+                # Compute and display the distance between start and goal
+                dist = compute_distance(start_grid, goal_grid)
+                print(f"Distance between start and goal: {dist:.2f} grid units")
+
+            frame_count +=1
+
+    except KeyboardInterrupt:
+        print("Loop interrupted. Exiting...")
+
+    # Release the camera
+    cap.release()
+
+if __name__ == "__main__":
+    main()
